@@ -40,6 +40,7 @@ local EXT_TO_LANG = {
   exs = "elixir",
   md = "markdown",
   markdown = "markdown",
+  zig = "zig",
 }
 
 local LANG_TO_PARSER = {
