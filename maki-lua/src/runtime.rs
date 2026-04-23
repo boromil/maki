@@ -701,7 +701,8 @@ impl LuaRuntime {
         maki.set("setup", setup_fn).map_err(&map_err)?;
         maki.set(
             "fs",
-            crate::api::fs::create_fs_table(&self.lua).map_err(&map_err)?,
+            crate::api::fs::create_fs_table(&self.lua, std::sync::Arc::new([]))
+                .map_err(&map_err)?,
         )
         .map_err(&map_err)?;
         maki.set(

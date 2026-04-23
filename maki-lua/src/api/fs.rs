@@ -3,7 +3,14 @@ use std::fs::FileType;
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
-use mlua::{Lua, Result as LuaResult, Table};
+use std::ffi::OsStr;
+use std::sync::Arc;
+
+use mlua::{Buffer, Lua, Result as LuaResult, Table};
+
+const SANDBOX_ERR: &str = "path outside sandbox";
+const NON_UTF8: &str = "non-utf8 path";
+const MAX_SYMLINK_DEPTH: u8 = 40;
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -86,7 +93,86 @@ fn collect_dir_entries(
     }
 }
 
-pub(crate) fn create_fs_table(lua: &Lua) -> LuaResult<Table> {
+/// Canonicalize the deepest existing ancestor, then re-append the rest lexically.
+/// This way plugins can write to paths that don't exist yet, but symlink escapes
+/// through existing components are still caught.
+pub(crate) fn resolve_for_sandbox(path: &str) -> LuaResult<PathBuf> {
+    resolve_for_sandbox_depth(path, 0)
+}
+
+fn resolve_for_sandbox_depth(path: &str, depth: u8) -> LuaResult<PathBuf> {
+    if depth > MAX_SYMLINK_DEPTH {
+        return Err(mlua::Error::runtime("fs: symlink loop detected"));
+    }
+    let p = Path::new(path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| mlua::Error::runtime(format!("fs: cannot resolve cwd: {e}")))?
+            .join(p)
+    };
+
+    // Follow the symlink manually before the canonicalize loop so that broken
+    // symlinks (target doesn't exist) are still detected as sandbox escapes.
+    if let Ok(meta) = std::fs::symlink_metadata(&abs) {
+        if meta.file_type().is_symlink() {
+            if let Ok(target) = std::fs::read_link(&abs) {
+                let resolved = if target.is_absolute() {
+                    target
+                } else {
+                    abs.parent().unwrap_or(Path::new("/")).join(target)
+                };
+                return resolve_for_sandbox_depth(&resolved.to_string_lossy(), depth + 1);
+            }
+        }
+    }
+
+    let mut existing = abs.as_path();
+    let mut trailing: Vec<&OsStr> = Vec::new();
+    let canon = loop {
+        match existing.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => match existing.parent() {
+                Some(parent) => {
+                    if let Some(name) = existing.file_name() {
+                        trailing.push(name);
+                    }
+                    existing = parent;
+                }
+                None => {
+                    return Err(mlua::Error::runtime(format!(
+                        "fs: cannot resolve path '{path}'"
+                    )));
+                }
+            },
+        }
+    };
+
+    let mut result = canon;
+    for name in trailing.iter().rev() {
+        let comp = Path::new(name);
+        match comp.components().next() {
+            Some(Component::ParentDir) => {
+                result.pop();
+            }
+            Some(Component::CurDir) | None => {}
+            _ => result.push(name),
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn check_sandbox(path: &str, roots: &[PathBuf]) -> LuaResult<PathBuf> {
+    let resolved = resolve_for_sandbox(path)?;
+    if roots.iter().any(|r| resolved.starts_with(r)) {
+        Ok(resolved)
+    } else {
+        Err(mlua::Error::runtime(format!("{SANDBOX_ERR}: {path}")))
+    }
+}
+
+pub(crate) fn create_fs_table(lua: &Lua, roots: Arc<[PathBuf]>) -> LuaResult<Table> {
     let t = lua.create_table()?;
 
     t.set(
@@ -331,7 +417,7 @@ mod tests {
         std::fs::write(&file, "world").unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let read: mlua::Function = tbl.get("read").unwrap();
         let result: String = smol::block_on(read.call_async(file.to_str().unwrap())).unwrap();
         assert_eq!(result, "world");
@@ -344,7 +430,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("sub")).unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
         let result: Table =
             smol::block_on(dir.call_async::<Table>(tmp.path().to_str().unwrap())).unwrap();
@@ -369,7 +455,7 @@ mod tests {
         std::fs::write(tmp.path().join("d/nested.txt"), "").unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
 
         let opts = lua.create_table().unwrap();
@@ -392,7 +478,7 @@ mod tests {
     fn dir_nonexistent_returns_empty() {
         let tmp = TempDir::new().unwrap();
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
         let missing = tmp.path().join("does_not_exist");
         let result: Table =
@@ -407,7 +493,7 @@ mod tests {
         std::fs::write(&file, "hello").unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let metadata: mlua::Function = tbl.get("metadata").unwrap();
 
         let f: Table =
@@ -437,7 +523,7 @@ mod tests {
         std::os::unix::fs::symlink(&real_dir, tmp.path().join("link")).unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
 
         let opts = lua.create_table().unwrap();
@@ -466,7 +552,7 @@ mod tests {
         std::os::unix::fs::symlink("/nonexistent_target_xyz", tmp.path().join("broken")).unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
 
         let result: Table =
@@ -494,7 +580,7 @@ mod tests {
         std::os::unix::fs::symlink(tmp.path(), child.join("loop")).unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let dir: mlua::Function = tbl.get("dir").unwrap();
 
         let opts = lua.create_table().unwrap();

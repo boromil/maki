@@ -28,7 +28,7 @@ pub(crate) fn create_maki_global(
     let maki = lua.create_table()?;
 
     maki.set("api", tool::create_api_table(lua, pending)?)?;
-    maki.set("fs", fs::create_fs_table(lua)?)?;
+    maki.set("fs", fs::create_fs_table(lua, Arc::new([]))?)?;
     maki.set("log", log::create_log_table(lua, plugin)?)?;
     maki.set("treesitter", treesitter::create_treesitter_table(lua)?)?;
     maki.set("uv", uv::create_uv_table(lua)?)?;
