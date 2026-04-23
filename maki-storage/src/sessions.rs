@@ -7,7 +7,6 @@
 //!
 //! Legacy `.json` files are loaded transparently and converted to `.jsonl` on next save.
 
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -82,10 +81,12 @@ pub struct Session<M, U, T> {
     pub updated_at: u64,
 }
 
+#[derive(Clone)]
 pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub updated_at: u64,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -615,36 +616,17 @@ enum ScanRecord {
     Other,
 }
 
-fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError> {
-    let mut out = Vec::new();
-
-    for path in session_entries(dir)? {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match ext {
-            "jsonl" => {
-                if let Some(summary) = scan_jsonl_header(cwd, &path) {
-                    out.push(summary);
-                }
-            }
-            "json" => {
-                if let Some(summary) = scan_legacy_header(cwd, &path) {
-                    out.push(summary);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(out)
-}
-
-fn scan_jsonl_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
+fn scan_jsonl_header(cwd: Option<&str>, path: &Path) -> Option<SessionSummary> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
     let first_line = lines.next()?.ok()?;
     let header: JsonlHeader = serde_json::from_str(&first_line).ok()?;
-    if header.v != LOG_FORMAT_VERSION || header.cwd != cwd {
+    if header.v != LOG_FORMAT_VERSION {
+        return None;
+    }
+    if cwd.is_some_and(|c| header.cwd != c) {
         return None;
     }
 
@@ -665,22 +647,69 @@ fn scan_jsonl_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
 
     Some(SessionSummary {
         id: header.id,
+        cwd: header.cwd,
         title,
         updated_at,
     })
 }
 
-fn scan_legacy_header(cwd: &str, path: &Path) -> Option<SessionSummary> {
+fn scan_legacy_header(cwd: Option<&str>, path: &Path) -> Option<SessionSummary> {
     let data = fs::read(path).ok()?;
     let h: LegacyHeader = serde_json::from_slice(&data).ok()?;
-    if h.version != SESSION_VERSION || h.cwd != cwd {
+    if h.version != SESSION_VERSION {
+        return None;
+    }
+    if cwd.is_some_and(|c| h.cwd != c) {
         return None;
     }
     Some(SessionSummary {
         id: h.id,
+        cwd: h.cwd,
         title: h.title,
         updated_at: h.updated_at,
     })
+}
+
+fn scan_headers(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, StorageError> {
+    let mut out = Vec::new();
+    for path in session_entries(dir)? {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        match ext {
+            "jsonl" => {
+                if let Some(summary) = scan_jsonl_header(Some(cwd), &path) {
+                    out.push(summary);
+                }
+            }
+            "json" => {
+                if let Some(summary) = scan_legacy_header(Some(cwd), &path) {
+                    out.push(summary);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+fn scan_all_headers(dir: &Path) -> Result<Vec<SessionSummary>, StorageError> {
+    let mut out = Vec::new();
+    for path in session_entries(dir)? {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        match ext {
+            "jsonl" => {
+                if let Some(summary) = scan_jsonl_header(None, &path) {
+                    out.push(summary);
+                }
+            }
+            "json" => {
+                if let Some(summary) = scan_legacy_header(None, &path) {
+                    out.push(summary);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 fn session_entries(dir: &Path) -> Result<Vec<PathBuf>, StorageError> {
@@ -777,7 +806,18 @@ where
 
     pub fn list_in(cwd: &str, dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
         let mut summaries = scan_headers(cwd, dir)?;
-        summaries.sort_unstable_by_key(|s| Reverse(s.updated_at));
+        summaries.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+        Ok(summaries)
+    }
+
+    pub fn list_all(dir: &DataDir) -> Result<Vec<SessionSummary>, SessionError> {
+        let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
+        Self::list_all_in(&sessions_dir)
+    }
+
+    pub fn list_all_in(dir: &Path) -> Result<Vec<SessionSummary>, SessionError> {
+        let mut summaries = scan_all_headers(dir)?;
+        summaries.sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
         Ok(summaries)
     }
 
