@@ -404,6 +404,13 @@ pub fn canonicalize_scope_path(path: &str) -> String {
     match p.canonicalize() {
         Ok(abs) => abs.to_string_lossy().into_owned(),
         Err(_) => {
+            // File doesn't exist yet; try resolving symlinks on the parent so
+            // paths like /tmp/file.txt become /private/tmp/file.txt on macOS.
+            if let (Some(parent), Some(file_name)) = (p.parent(), p.file_name())
+                && let Ok(canon_parent) = parent.canonicalize()
+            {
+                return canon_parent.join(file_name).to_string_lossy().into_owned();
+            }
             let mut result = PathBuf::new();
             for component in p.components() {
                 match component {
@@ -529,8 +536,19 @@ mod tests {
         ));
     }
 
-    #[test_case("write", "/tmp/file.txt" => true ; "write_in_cwd")]
-    #[test_case("write", "/etc/passwd" => false ; "write_outside_cwd")]
+    #[test_case("/tmp/file.txt", true  ; "in_cwd")]
+    #[test_case("/etc/passwd",   false ; "outside_cwd")]
+    fn write_path_check(path: &str, expect_allowed: bool) {
+        let scope = canonicalize_scope_path(path);
+        assert_eq!(
+            matches!(
+                default_mgr().check("write", &scope),
+                PermissionCheck::Allowed
+            ),
+            expect_allowed
+        );
+    }
+
     #[test_case("task", "task:research" => true ; "task_allowed")]
     #[test_case("bash", "cargo test" => false ; "bash_prompts")]
     fn builtin_check(tool: &str, scope: &str) -> bool {
