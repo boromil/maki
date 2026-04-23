@@ -1,3 +1,4 @@
+mod acp;
 mod cli;
 mod cmd;
 mod print;

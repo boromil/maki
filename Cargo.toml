@@ -16,6 +16,10 @@ rust-version = "1.85"
 name = "maki"
 path = "src/main.rs"
 
+[[bin]]
+name = "acp-harness"
+path = "src/bin/acp_harness.rs"
+
 [features]
 demo = ["maki-ui/demo"]
 
@@ -40,6 +44,11 @@ tempfile = { workspace = true }
 isahc = { workspace = true }
 thiserror = { workspace = true }
 libc = { workspace = true }
+agent-client-protocol = { workspace = true }
+async-lock = { workspace = true }
+jiff = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 test-case = { workspace = true }
@@ -156,6 +165,9 @@ serde_yaml = "0.9"
 shell-words = "1"
 
 wait-timeout = "0.2"
+agent-client-protocol = "0.11.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-util = { version = "0.7", features = ["compat"] }
 
 [profile.bench]
 debug = true
