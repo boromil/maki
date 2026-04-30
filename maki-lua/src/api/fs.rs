@@ -4,7 +4,6 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use std::ffi::OsStr;
-use std::sync::Arc;
 
 use mlua::{Buffer, Lua, Result as LuaResult, Table};
 
@@ -172,7 +171,7 @@ pub(crate) fn check_sandbox(path: &str, roots: &[PathBuf]) -> LuaResult<PathBuf>
     }
 }
 
-pub(crate) fn create_fs_table(lua: &Lua, roots: Arc<[PathBuf]>) -> LuaResult<Table> {
+pub(crate) fn create_fs_table(lua: &Lua) -> LuaResult<Table> {
     let t = lua.create_table()?;
 
     t.set(
@@ -417,7 +416,7 @@ mod tests {
         std::fs::write(&file, "world").unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
+        let tbl = create_fs_table(&lua).unwrap();
         let read: mlua::Function = tbl.get("read").unwrap();
         let result: String = smol::block_on(read.call_async(file.to_str().unwrap())).unwrap();
         assert_eq!(result, "world");
