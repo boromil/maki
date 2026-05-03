@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,15 +21,13 @@ use agent_client_protocol::{
     on_receive_request, role::acp::Agent,
 };
 use maki_agent::tools::{
-    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME,
-    FIND_SYMBOL_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME, INDEX_TOOL_NAME, MULTIEDIT_TOOL_NAME,
-    READ_TOOL_NAME, WEBFETCH_TOOL_NAME, WEBSEARCH_TOOL_NAME, WRITE_TOOL_NAME,
+    BASH_TOOL_NAME, BATCH_TOOL_NAME, CODE_EXECUTION_TOOL_NAME, EDIT_TOOL_NAME, GLOB_TOOL_NAME,
+    GREP_TOOL_NAME, MULTIEDIT_TOOL_NAME, READ_TOOL_NAME, WRITE_TOOL_NAME,
 };
 use maki_providers::ContentBlock as ProviderBlock;
 use maki_providers::Role as ProviderRole;
 
 use color_eyre::Result;
-use maki_agent::skill::Skill;
 use maki_agent::tools::{
     DescriptionContext, FileReadTracker, QUESTION_TOOL_NAME, ToolFilter, ToolRegistry,
 };
@@ -36,10 +36,11 @@ use maki_agent::{
     AgentRunParams, CancelToken, CancelTrigger, Envelope, EventSender, History, PermissionsConfig,
     agent, template,
 };
+use maki_config::ToolOutputLines;
 use maki_providers::model::Model;
 use maki_providers::provider;
 use maki_providers::{Message, StopReason as MakiStopReason, Timeouts, TokenUsage};
-use maki_storage::DataDir;
+use maki_storage::StateDir;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::error;
 use uuid::Uuid;
@@ -62,12 +63,11 @@ pub async fn run(
     model: Model,
     config: AgentConfig,
     permissions_config: PermissionsConfig,
-    skills: Vec<Skill>,
     timeouts: Timeouts,
-    storage: DataDir,
+    storage: StateDir,
 ) -> Result<()> {
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
-    let storage: Arc<DataDir> = Arc::new(storage);
+    let storage: Arc<StateDir> = Arc::new(storage);
 
     let sessions_new = Arc::clone(&sessions);
     let sessions_load = Arc::clone(&sessions);
@@ -84,7 +84,6 @@ pub async fn run(
     let model_prompt = model.clone();
     let config_prompt = config.clone();
     let perms_prompt = permissions_config.clone();
-    let skills_prompt: Arc<[Skill]> = Arc::from(skills);
     let timeouts_prompt = timeouts;
 
     Agent
@@ -237,7 +236,6 @@ pub async fn run(
                 let model = model_prompt.clone();
                 let config = config_prompt.clone();
                 let perms = perms_prompt.clone();
-                let skills = Arc::clone(&skills_prompt);
                 let timeouts_t = timeouts_prompt;
                 let sessions = Arc::clone(&sessions_prompt);
                 let storage = Arc::clone(&storage_prompt);
@@ -274,10 +272,7 @@ pub async fn run(
                                     agent::load_instructions(&cwd_t.to_string_lossy());
                                 let filter =
                                     ToolFilter::from_config(&config_t, &[QUESTION_TOOL_NAME]);
-                                let ctx = DescriptionContext {
-                                    skills: &skills,
-                                    filter: &filter,
-                                };
+                                let ctx = DescriptionContext { filter: &filter };
                                 let tools = ToolRegistry::native().definitions(
                                     &vars,
                                     &ctx,
@@ -293,8 +288,8 @@ pub async fn run(
                                     AgentParams {
                                         provider: prov,
                                         model: model_t,
-                                        skills,
                                         config: config_t,
+                                        tool_output_lines: ToolOutputLines::default(),
                                         permissions: Arc::new(
                                             maki_agent::permissions::PermissionManager::new(
                                                 perms,
@@ -575,14 +570,9 @@ pub async fn run(
 
 fn tool_kind(name: &str) -> ToolKind {
     match name {
-        READ_TOOL_NAME
-        | GLOB_TOOL_NAME
-        | GREP_TOOL_NAME
-        | INDEX_TOOL_NAME
-        | FIND_SYMBOL_TOOL_NAME => ToolKind::Read,
+        READ_TOOL_NAME | GLOB_TOOL_NAME | GREP_TOOL_NAME => ToolKind::Read,
         EDIT_TOOL_NAME | WRITE_TOOL_NAME | MULTIEDIT_TOOL_NAME => ToolKind::Edit,
         BASH_TOOL_NAME | BATCH_TOOL_NAME | CODE_EXECUTION_TOOL_NAME => ToolKind::Execute,
-        WEBFETCH_TOOL_NAME | WEBSEARCH_TOOL_NAME => ToolKind::Fetch,
         _ => ToolKind::Other,
     }
 }

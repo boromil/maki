@@ -4,11 +4,15 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use std::ffi::OsStr;
+use std::sync::Arc;
 
-use mlua::{Buffer, Lua, Result as LuaResult, Table};
+use mlua::{Lua, Result as LuaResult, Table};
 
+#[allow(dead_code)]
 const SANDBOX_ERR: &str = "path outside sandbox";
+#[allow(dead_code)]
 const NON_UTF8: &str = "non-utf8 path";
+#[allow(dead_code)]
 const MAX_SYMLINK_DEPTH: u8 = 40;
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -95,10 +99,12 @@ fn collect_dir_entries(
 /// Canonicalize the deepest existing ancestor, then re-append the rest lexically.
 /// This way plugins can write to paths that don't exist yet, but symlink escapes
 /// through existing components are still caught.
+#[allow(dead_code)]
 pub(crate) fn resolve_for_sandbox(path: &str) -> LuaResult<PathBuf> {
     resolve_for_sandbox_depth(path, 0)
 }
 
+#[allow(dead_code)]
 fn resolve_for_sandbox_depth(path: &str, depth: u8) -> LuaResult<PathBuf> {
     if depth > MAX_SYMLINK_DEPTH {
         return Err(mlua::Error::runtime("fs: symlink loop detected"));
@@ -162,6 +168,7 @@ fn resolve_for_sandbox_depth(path: &str, depth: u8) -> LuaResult<PathBuf> {
     Ok(result)
 }
 
+#[allow(dead_code)]
 pub(crate) fn check_sandbox(path: &str, roots: &[PathBuf]) -> LuaResult<PathBuf> {
     let resolved = resolve_for_sandbox(path)?;
     if roots.iter().any(|r| resolved.starts_with(r)) {
@@ -171,7 +178,7 @@ pub(crate) fn check_sandbox(path: &str, roots: &[PathBuf]) -> LuaResult<PathBuf>
     }
 }
 
-pub(crate) fn create_fs_table(lua: &Lua) -> LuaResult<Table> {
+pub(crate) fn create_fs_table(lua: &Lua, _roots: Arc<[PathBuf]>) -> LuaResult<Table> {
     let t = lua.create_table()?;
 
     t.set(
@@ -416,7 +423,7 @@ mod tests {
         std::fs::write(&file, "world").unwrap();
 
         let lua = Lua::new();
-        let tbl = create_fs_table(&lua).unwrap();
+        let tbl = create_fs_table(&lua, Arc::new([])).unwrap();
         let read: mlua::Function = tbl.get("read").unwrap();
         let result: String = smol::block_on(read.call_async(file.to_str().unwrap())).unwrap();
         assert_eq!(result, "world");

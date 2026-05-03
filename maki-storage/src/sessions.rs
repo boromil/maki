@@ -810,7 +810,7 @@ where
         Ok(summaries)
     }
 
-    pub fn list_all(dir: &DataDir) -> Result<Vec<SessionSummary>, SessionError> {
+    pub fn list_all(dir: &StateDir) -> Result<Vec<SessionSummary>, SessionError> {
         let sessions_dir = dir.ensure_subdir(SESSIONS_DIR)?;
         Self::list_all_in(&sessions_dir)
     }
